@@ -1,0 +1,27 @@
+{
+    "name": "buhhotto/instagram-checker",
+    "description": "منظومة PHP لتحليل حسابات إنستاجرام: توفّر أسماء المستخدمين، تحليل التفاعل وإعادة النشر، وقياس السلوك والردود.",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1",
+        "ext-curl": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        },
+        "files": [
+            "src/helpers.php"
+        ]
+    },
+    "scripts": {
+        "serve": "php -S localhost:8000 -t public",
+        "test": "php tests/run.php"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
