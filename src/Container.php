@@ -19,6 +19,9 @@ use App\Instagram\ProviderChain;
 use App\Instagram\UsernameChecker;
 use App\Support\Config;
 use App\Support\Env;
+use App\Watchlist\WatchlistChecker;
+use App\Watchlist\WatchlistRepository;
+use App\Watchlist\WebhookNotifier;
 
 /**
  * حاوية بسيطة تبني خدمات المنظومة وتحتفظ بنسخة واحدة من كل خدمة.
@@ -144,5 +147,26 @@ final class Container
     public function isDemoOnly(): bool
     {
         return $this->providers()->activeNames() === ['demo'];
+    }
+
+    public function watchlistRepository(): WatchlistRepository
+    {
+        return $this->instances['watchlist_repository'] ??= new WatchlistRepository(
+            $this->config->string('watchlist.storage_path', __DIR__ . '/../storage/watchlist.json')
+        );
+    }
+
+    public function webhookNotifier(): WebhookNotifier
+    {
+        return $this->instances['webhook_notifier'] ??= new WebhookNotifier($this->http());
+    }
+
+    public function watchlistChecker(): WatchlistChecker
+    {
+        return $this->instances['watchlist_checker'] ??= new WatchlistChecker(
+            $this->watchlistRepository(),
+            $this->usernameChecker(),
+            $this->webhookNotifier()
+        );
     }
 }

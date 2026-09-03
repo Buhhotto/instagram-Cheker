@@ -28,6 +28,11 @@ use App\Instagram\UsernameChecker;
 use App\Support\SeededRandom;
 use App\Support\Stats;
 use App\Support\Text;
+use App\Watchlist\Contracts\Notifier;
+use App\Watchlist\WatchedUsername;
+use App\Watchlist\WatchlistChecker;
+use App\Watchlist\WatchlistRepository;
+use App\Watchlist\WebhookNotifier;
 use Tests\TestCase;
 
 require_once __DIR__ . '/../bootstrap.php';
@@ -247,6 +252,149 @@ $t->assertSame('NASA', $request->input('username'), 'قراءة معامل مع 
 $t->assertSame(15, $request->intInput('limit', 25), 'قراءة معامل رقمي');
 $t->assertSame(25, $request->intInput('missing', 25), 'القيمة الافتراضية للمعامل المفقود');
 $t->assert($request->wantsJson(), 'كشف طلبات JSON من المسار');
+
+// ===== قائمة المراقبة: نموذج البيانات والتخزين =====
+$t->group('WatchedUsername — نموذج البيانات');
+$entry = WatchedUsername::fromArray([
+    'username' => 'Example',
+    'webhook_url' => 'https://example.test/hook',
+    'added_at' => '2026-01-01T00:00:00+00:00',
+    'last_status' => 'taken',
+    'check_count' => 3,
+]);
+$t->assertSame('example', $entry->username, 'توحيد حروف الاسم إلى صغيرة عند القراءة');
+$t->assertSame('https://www.instagram.com/example/', $entry->profileUrl(), 'بناء رابط الملف الشخصي');
+$t->assertSame(3, $entry->jsonSerialize()['check_count'], 'الحفاظ على عدد مرات الفحص عبر jsonSerialize');
+$noWebhook = WatchedUsername::fromArray(['username' => 'x', 'webhook_url' => '']);
+$t->assertSame(null, $noWebhook->webhookUrl, 'سلسلة فارغة لرابط الـ webhook تُعامل كغياب القيمة');
+
+$t->group('WatchlistRepository — التخزين والقفل الملفي');
+$watchlistFile = sys_get_temp_dir() . '/ig_watchlist_test_' . bin2hex(random_bytes(4)) . '.json';
+$repo = new WatchlistRepository($watchlistFile);
+$t->assertSame([], $repo->all(), 'قائمة فارغة عند الإنشاء');
+$repo->add(new WatchedUsername('nasa', null, date(DATE_ATOM)));
+$t->assertSame(1, $repo->count(), 'إضافة إدخال واحد');
+$repo->add(new WatchedUsername('nasa', null, date(DATE_ATOM)));
+$t->assertSame(1, $repo->count(), 'عدم تكرار نفس الاسم عند الإضافة مرتين');
+$t->assert($repo->find('nasa') !== null, 'العثور على إدخال موجود');
+$t->assert($repo->find('missing') === null, 'عدم العثور على إدخال غير موجود');
+$repo->update('nasa', function (WatchedUsername $e): WatchedUsername {
+    $e->lastStatus = 'available';
+
+    return $e;
+});
+$t->assertSame('available', $repo->find('nasa')?->lastStatus, 'تحديث حالة إدخال موجود');
+$reopened = new WatchlistRepository($watchlistFile);
+$t->assertSame('available', $reopened->find('nasa')?->lastStatus, 'استمرار البيانات عبر فتح جديد لنفس الملف');
+$t->assert($repo->remove('nasa'), 'إزالة إدخال موجود تُرجع true');
+$t->assert(!$repo->remove('nasa'), 'إزالة إدخال محذوف مسبقًا تُرجع false');
+$t->assertSame(0, $repo->count(), 'القائمة فارغة بعد الحذف');
+@unlink($watchlistFile);
+
+// ===== حماية الـ webhook من SSRF =====
+$t->group('WebhookNotifier — رفض عناوين webhook غير آمنة');
+$notifier = new WebhookNotifier(new App\Http\HttpClient(2, 0));
+$t->assert(!$notifier->isSafeUrl('ftp://example.test/hook'), 'رفض بروتوكول غير HTTP(S)');
+$t->assert(!$notifier->isSafeUrl('ليس رابطًا'), 'رفض نص ليس رابطًا');
+$t->assert(!$notifier->isSafeUrl('http://127.0.0.1/hook'), 'رفض loopback');
+$t->assert(!$notifier->isSafeUrl('http://localhost:8080/hook'), 'رفض اسم المضيف localhost');
+$t->assert(!$notifier->isSafeUrl('http://10.1.2.3/hook'), 'رفض نطاق IP خاص (10.0.0.0/8)');
+$t->assert(!$notifier->isSafeUrl('http://169.254.169.254/latest/meta-data'), 'رفض نطاق link-local (بيانات تعريف السحابة)');
+$t->assert(!$notifier->isSafeUrl('http://this-host-should-not-exist-zzz123.invalid/hook'), 'رفض مضيف لا يُحلّ إلى أي عنوان');
+$t->assert($notifier->isSafeUrl('http://8.8.8.8/hook'), 'قبول عنوان IP عام صريح');
+
+// ===== قائمة المراقبة: منطق الفحص والتنبيه =====
+$t->group('WatchlistChecker — تحوّل الحالة والتنبيه');
+
+/** مزوّد وهمي يُرجع حالة وجود قابلة للتبديل يدويًا، لمحاكاة تحوّل حقيقي بين فحصين. */
+$flipState = new class { public bool $exists = true; };
+$flippableProvider = new class ($flipState) implements ProfileProvider {
+    public function __construct(private object $state)
+    {
+    }
+    public function name(): string { return 'fake_source'; }
+    public function isConfigured(): bool { return true; }
+    public function fetchProfile(string $u): ?App\Instagram\DTO\Profile { return null; }
+    public function fetchMedia(string $u, int $limit = 25): array { return []; }
+    public function fetchComments(string $u, string $m, int $limit = 50): array { return []; }
+    public function supportsComments(string $u): bool { return false; }
+    public function usernameExists(string $u): ?bool { return $this->state->exists; }
+};
+
+/** يسجّل كل نداء بدل إرسال طلب شبكة حقيقي. */
+$recorder = new class implements Notifier {
+    /** @var list<array{url:string,payload:array<string,mixed>}> */
+    public array $calls = [];
+    public function send(string $url, array $payload): bool
+    {
+        $this->calls[] = ['url' => $url, 'payload' => $payload];
+
+        return true;
+    }
+};
+
+$flipChain = new ProviderChain([$flippableProvider]);
+$flipChecker = new UsernameChecker($flipChain);
+$flipFile = sys_get_temp_dir() . '/ig_watchlist_flip_' . bin2hex(random_bytes(4)) . '.json';
+$flipRepo = new WatchlistRepository($flipFile);
+$flipRepo->add(new WatchedUsername('flip_test_user', 'https://example.test/webhook', date(DATE_ATOM)));
+$flipWatcher = new WatchlistChecker($flipRepo, $flipChecker, $recorder);
+
+$flipState->exists = true;
+$first = $flipWatcher->checkOne('flip_test_user');
+$t->assertSame('taken', $first['status'], 'الفحص الأول يعكس حالة المزوّد');
+$t->assertSame(0, count($recorder->calls), 'لا تنبيه عند أول فحص (لا حالة سابقة للمقارنة)');
+
+$flipState->exists = false;
+$second = $flipWatcher->checkOne('flip_test_user');
+$t->assertSame('available', $second['status'], 'الفحص الثاني يعكس التحوّل إلى متاح');
+$t->assertSame(1, count($recorder->calls), 'تنبيه واحد عند تحوّل واثق للحالة');
+$t->assertSame('username_available', $recorder->calls[0]['payload']['event'], 'حدث التنبيه الأول: أصبح متاحًا');
+$t->assertSame('https://example.test/webhook', $recorder->calls[0]['url'], 'إرسال التنبيه إلى رابط الإدخال');
+
+$flipState->exists = true;
+$flipWatcher->checkOne('flip_test_user');
+$t->assertSame(2, count($recorder->calls), 'تنبيه ثانٍ عند رجوع الاسم لحالة مستخدم');
+$t->assertSame('username_taken', $recorder->calls[1]['payload']['event'], 'حدث التنبيه الثاني: أصبح مستخدمًا مجددًا');
+@unlink($flipFile);
+
+$t->group('WatchlistChecker — كتم تنبيهات وضع التجربة');
+$demoRecorder = new class implements Notifier {
+    public int $callCount = 0;
+    public function send(string $url, array $payload): bool
+    {
+        $this->callCount++;
+
+        return true;
+    }
+};
+$demoFile = sys_get_temp_dir() . '/ig_watchlist_demo_' . bin2hex(random_bytes(4)) . '.json';
+$demoRepo = new WatchlistRepository($demoFile);
+$demoRepo->add(new WatchedUsername('nasa', 'https://example.test/webhook', date(DATE_ATOM)));
+// نُجبر حالة سابقة مغايرة لما سيُرجعه DemoProvider يدويًا (nasa دائمًا "مستخدم" فيه)
+// لمحاكاة تحوّل واثق ظاهريًا، والتحقق من أن مصدر demo يكتم التنبيه رغم ذلك.
+$demoRepo->update('nasa', function (WatchedUsername $e): WatchedUsername {
+    $e->lastStatus = 'available';
+
+    return $e;
+});
+$demoWatcher = new WatchlistChecker($demoRepo, $checker, $demoRecorder);
+$demoResult = $demoWatcher->checkOne('nasa');
+$t->assertSame('taken', $demoResult['status'], 'DemoProvider يُرجع nasa كاسم مستخدم دائمًا');
+$t->assertSame('demo', $demoResult['source'], 'مصدر النتيجة demo كما هو متوقّع');
+$t->assertSame(0, $demoRecorder->callCount, 'كتم التنبيه عند مصدر demo رغم وجود تحوّل ظاهري');
+@unlink($demoFile);
+
+$t->group('WatchlistChecker — checkAll يغطي كل القائمة');
+$bulkFile = sys_get_temp_dir() . '/ig_watchlist_bulk_' . bin2hex(random_bytes(4)) . '.json';
+$bulkRepo = new WatchlistRepository($bulkFile);
+$bulkRepo->add(new WatchedUsername('nasa', null, date(DATE_ATOM)));
+$bulkRepo->add(new WatchedUsername('some_free_name_42', null, date(DATE_ATOM)));
+$bulkWatcher = new WatchlistChecker($bulkRepo, $checker, $demoRecorder);
+$bulkResults = $bulkWatcher->checkAll();
+$t->assertSame(2, count($bulkResults), 'نتيجة لكل اسم في القائمة');
+$t->assert(isset($bulkResults['nasa']['status']), 'كل نتيجة تحمل حالة');
+@unlink($bulkFile);
 
 array_map('unlink', glob($cacheDir . '/*') ?: []);
 @rmdir($cacheDir);

@@ -2,5 +2,7 @@
 /.env
 /storage/cache/*
 !/storage/cache/.gitkeep
+/storage/watchlist.json
+/storage/*.log
 .DS_Store
 *.log

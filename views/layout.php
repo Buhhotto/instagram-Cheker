@@ -14,6 +14,7 @@ $nav = [
     '/username' => 'توفّر الاسم',
     '/analyze' => 'تحليل حساب',
     '/behavior' => 'قياس السلوك',
+    '/watchlist' => 'قائمة المراقبة',
 ];
 ?>
 <!doctype html>

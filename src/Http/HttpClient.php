@@ -33,20 +33,7 @@ final class HttpClient
             $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($query);
         }
 
-        $lastError = null;
-
-        for ($attempt = 0; $attempt <= $this->retries; $attempt++) {
-            try {
-                return $this->execute($url, $headers);
-            } catch (TransportException $e) {
-                $lastError = $e;
-                if ($attempt < $this->retries) {
-                    usleep((int) (250_000 * (2 ** $attempt)));
-                }
-            }
-        }
-
-        throw $lastError ?? new TransportException('فشل الطلب لسبب غير معروف.');
+        return $this->retry(fn (): array => $this->execute($url, $headers));
     }
 
     /**
@@ -59,6 +46,70 @@ final class HttpClient
     public function getJson(string $url, array $query = [], array $headers = []): array
     {
         $response = $this->get($url, $query, $headers + ['Accept' => 'application/json']);
+
+        return $this->decodeJson($response);
+    }
+
+    /**
+     * تنفيذ طلب POST بجسم خام.
+     *
+     * @param array<string,string> $headers
+     * @return array{status:int,body:string,headers:array<string,string>}
+     */
+    public function post(string $url, string $body, array $headers = []): array
+    {
+        return $this->retry(fn (): array => $this->execute($url, $headers, 'POST', $body));
+    }
+
+    /**
+     * تنفيذ طلب POST بجسم JSON وفك ترميز الاستجابة كـ JSON.
+     *
+     * @param array<string,mixed> $data
+     * @param array<string,string> $headers
+     * @return array{status:int,json:array<mixed>|null,body:string}
+     */
+    public function postJson(string $url, array $data, array $headers = []): array
+    {
+        $encoded = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        $response = $this->post($url, $encoded === false ? '{}' : $encoded, $headers + [
+            'Content-Type' => 'application/json',
+            'Accept' => 'application/json',
+        ]);
+
+        return $this->decodeJson($response);
+    }
+
+    /**
+     * تنفيذ محاولة مع إعادة المحاولة عند فشل الشبكة، بتأخير تصاعدي.
+     *
+     * @param callable():array{status:int,body:string,headers:array<string,string>} $attempt
+     * @return array{status:int,body:string,headers:array<string,string>}
+     */
+    private function retry(callable $attempt): array
+    {
+        $lastError = null;
+
+        for ($try = 0; $try <= $this->retries; $try++) {
+            try {
+                return $attempt();
+            } catch (TransportException $e) {
+                $lastError = $e;
+                if ($try < $this->retries) {
+                    usleep((int) (250_000 * (2 ** $try)));
+                }
+            }
+        }
+
+        throw $lastError ?? new TransportException('فشل الطلب لسبب غير معروف.');
+    }
+
+    /**
+     * @param array{status:int,body:string,headers:array<string,string>} $response
+     * @return array{status:int,json:array<mixed>|null,body:string}
+     */
+    private function decodeJson(array $response): array
+    {
         $decoded = json_decode($response['body'], true);
 
         return [
@@ -72,7 +123,7 @@ final class HttpClient
      * @param array<string,string> $headers
      * @return array{status:int,body:string,headers:array<string,string>}
      */
-    private function execute(string $url, array $headers): array
+    private function execute(string $url, array $headers, string $method = 'GET', ?string $body = null): array
     {
         $handle = curl_init();
         if ($handle === false) {
@@ -86,6 +137,10 @@ final class HttpClient
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS => 3,
+            // تقييد البروتوكولات (حتى عبر إعادة التوجيه) يمنع استغلال روابط مُدخلة من
+            // المستخدم (كـ webhook) للوصول إلى file:// أو بروتوكولات أخرى غير HTTP.
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_TIMEOUT => $this->timeout,
             CURLOPT_CONNECTTIMEOUT => min(8, $this->timeout),
             CURLOPT_USERAGENT => $this->userAgent,
@@ -102,16 +157,23 @@ final class HttpClient
             },
         ]);
 
-        $body = curl_exec($handle);
+        if ($method === 'POST') {
+            curl_setopt($handle, CURLOPT_POST, true);
+            if ($body !== null) {
+                curl_setopt($handle, CURLOPT_POSTFIELDS, $body);
+            }
+        }
+
+        $responseBody = curl_exec($handle);
         $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
         $error = curl_error($handle);
         curl_close($handle);
 
-        if ($body === false) {
+        if ($responseBody === false) {
             throw new TransportException('فشل الاتصال بالخدمة: ' . ($error !== '' ? $error : 'خطأ شبكة'));
         }
 
-        return ['status' => $status, 'body' => (string) $body, 'headers' => $responseHeaders];
+        return ['status' => $status, 'body' => (string) $responseBody, 'headers' => $responseHeaders];
     }
 
     /**

@@ -11,6 +11,7 @@ declare(strict_types=1);
 use App\Container;
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\PageController;
+use App\Http\Controllers\WatchlistController;
 use App\Http\Request;
 use App\Http\Response;
 use App\Http\Router;
@@ -31,6 +32,7 @@ $view = new View($root . '/views', [
 
 $pages = new PageController($container, $view);
 $api = new ApiController($container, $view);
+$watchlist = new WatchlistController($container, $view);
 
 $request = Request::fromGlobals();
 
@@ -39,10 +41,19 @@ $router = (new Router())
     ->any('/username', [$pages, 'username'])
     ->any('/analyze', [$pages, 'analyze'])
     ->any('/behavior', [$pages, 'behavior'])
+    ->get('/watchlist', [$watchlist, 'page'])
+    ->post('/watchlist/add', [$watchlist, 'add'])
+    ->post('/watchlist/remove', [$watchlist, 'remove'])
+    ->post('/watchlist/check', [$watchlist, 'checkOneWeb'])
+    ->post('/watchlist/check-all', [$watchlist, 'checkAllWeb'])
     ->get('/api/health', [$api, 'health'])
     ->any('/api/username/check', [$api, 'checkUsername'])
     ->any('/api/account/analyze', [$api, 'analyzeAccount'])
     ->any('/api/account/behavior', [$api, 'accountBehavior'])
+    ->get('/api/watchlist', [$watchlist, 'apiList'])
+    ->post('/api/watchlist/add', [$watchlist, 'apiAdd'])
+    ->post('/api/watchlist/remove', [$watchlist, 'apiRemove'])
+    ->post('/api/watchlist/check', [$watchlist, 'apiCheck'])
     ->fallback(fn (Request $request): Response => $request->wantsJson()
         ? $api->notFound($request)
         : $pages->notFound($request));

@@ -51,6 +51,13 @@ return [
         ],
     ],
 
+    'watchlist' => [
+        // قائمة مراقبة أسماء المستخدمين: تنبيه عند تحوّل الحالة، بدون أي تسجيل
+        // دخول أو تغيير اسم آلي — راجع README لتفاصيل الحدود المتعمّدة.
+        'storage_path' => Env::get('WATCHLIST_STORAGE_PATH', dirname(__DIR__) . '/storage/watchlist.json'),
+        'max_entries' => Env::int('WATCHLIST_MAX_ENTRIES', 30),
+    ],
+
     'analysis' => [
         'default_media_limit' => Env::int('ANALYSIS_MEDIA_LIMIT', 25),
         'comment_posts_sample' => Env::int('ANALYSIS_COMMENT_POSTS', 5),
