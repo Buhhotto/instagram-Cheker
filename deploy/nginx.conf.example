@@ -1,0 +1,24 @@
+# نموذج إعداد nginx — الجذر يشير إلى مجلد public فقط
+server {
+    listen 80;
+    server_name example.com;
+    root /var/www/instagram-checker/public;
+    index index.php;
+
+    charset utf-8;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+
+    # منع الوصول إلى ملفات المشروع الحسّاسة
+    location ~ /\.(env|git) {
+        deny all;
+    }
+}
