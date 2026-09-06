@@ -17,6 +17,10 @@ use App\Instagram\Providers\GraphApiProvider;
 use App\Instagram\Providers\PublicWebProvider;
 use App\Instagram\ProviderChain;
 use App\Instagram\UsernameChecker;
+use App\PropertyAlerts\PropertyAlertChecker;
+use App\PropertyAlerts\PropertySubscriptionRepository;
+use App\PropertyAlerts\Scraper\OmanRealScraper;
+use App\PropertyAlerts\WhatsAppCloudNotifier;
 use App\Support\Config;
 use App\Support\Env;
 use App\Watchlist\WatchlistChecker;
@@ -167,6 +171,44 @@ final class Container
             $this->watchlistRepository(),
             $this->usernameChecker(),
             $this->webhookNotifier()
+        );
+    }
+
+    public function propertySubscriptionRepository(): PropertySubscriptionRepository
+    {
+        return $this->instances['property_subscription_repository'] ??= new PropertySubscriptionRepository(
+            $this->config->string('property_alerts.storage_path', __DIR__ . '/../storage/property_alerts.json')
+        );
+    }
+
+    public function omanRealScraper(): OmanRealScraper
+    {
+        return $this->instances['oman_real_scraper'] ??= new OmanRealScraper(
+            $this->http(),
+            $this->config->array('property_alerts.source'),
+            $this->config->array('property_alerts.selectors'),
+            $this->config->array('property_alerts.types')
+        );
+    }
+
+    public function whatsAppNotifier(): WhatsAppCloudNotifier
+    {
+        return $this->instances['whatsapp_notifier'] ??= new WhatsAppCloudNotifier(
+            $this->http(),
+            $this->config->bool('property_alerts.whatsapp.enabled', false),
+            $this->config->string('property_alerts.whatsapp.access_token'),
+            $this->config->string('property_alerts.whatsapp.phone_number_id'),
+            $this->config->string('property_alerts.whatsapp.api_version', 'v21.0')
+        );
+    }
+
+    public function propertyAlertChecker(): PropertyAlertChecker
+    {
+        return $this->instances['property_alert_checker'] ??= new PropertyAlertChecker(
+            $this->propertySubscriptionRepository(),
+            $this->omanRealScraper(),
+            $this->whatsAppNotifier(),
+            $this->config->int('property_alerts.max_notifications_per_run', 5)
         );
     }
 }

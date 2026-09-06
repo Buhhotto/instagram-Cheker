@@ -8,9 +8,10 @@
 | تحليل حساب (متابعون، لايكات، تعليقات، ريبوست) | `/analyze` | `GET /api/account/analyze` |
 | قياس سلوك حساب وردوده | `/behavior` | `GET /api/account/behavior` |
 | قائمة مراقبة أسماء مستخدمين | `/watchlist` | `GET /api/watchlist` |
+| تنبيهات عقارية عبر واتساب (omanreal.com) | `/property-alerts` | `GET /api/property-alerts` |
 | حالة المنظومة والمزوّدين | — | `GET /api/health` |
 
-بدون أي اعتمادات خارجية: PHP 8.1+ مع `curl` و`json` و`mbstring` فقط.
+بدون أي اعتمادات خارجية: PHP 8.1+ مع `curl` و`json` و`mbstring` و`dom` فقط.
 
 ---
 
@@ -151,6 +152,71 @@ WATCHLIST_MAX_ENTRIES=30  # الحد الأقصى لعدد الأسماء الم
 
 ---
 
+## تنبيهات عقارية عبر واتساب (`/property-alerts`)
+
+أداة لمن يريد معرفة **فور** ظهور إعلان أرض جديد على [omanreal.com/Properties](https://omanreal.com/Properties)
+يطابق نوعًا (زراعي/سكني/صناعي/تجاري) وموقعًا (ولاية/محافظة) يختارهما — بدل تصفّح الموقع يدويًا بشكل متكرر.
+
+**ما تفعله:** تفحص صفحة نتائج الموقع دوريًا بنفس فلتر كل اشتراك، تقارن الإعلانات المستخرَجة بما رُصد سابقًا،
+وعند وجود إعلان جديد فعليًا تُرسل رسالة واتساب عبر **WhatsApp Cloud API** الرسمي من Meta. الفحص الأول لأي
+اشتراك جديد يسجّل النتائج الحالية كخط أساس **بدون تنبيه** — حتى لا تصلك رسالة عن كل إعلان كان موجودًا أصلًا
+وقت الاشتراك.
+
+**ما لا تفعله، وسبب ذلك:** لا تُسجّل دخولًا لأي حساب على الموقع، ولا تحجز أرضًا، ولا "تستغل ثغرة" في الموقع —
+هي مجرّد رصد دوري (polling) ومقارنة على بيانات عامة معروضة أصلًا لأي زائر، وتحترم الحدود المعتادة (تأخير بين
+الطلبات، عدم إغراق الخادم بطلبات متزامنة).
+
+### ⚠️ قيد مهم: مُحدِّدات الاستخراج غير مضبوطة افتراضيًا، وهذا مقصود
+
+هذا المستودع طُوّر في بيئة **محجوبة شبكيًا عن omanreal.com** (لا HTTP ولا حتى DNS)، فلم يتمكن من فتح الصفحة
+الفعلية لمعرفة بنية HTML الحقيقية، ولا أسماء معاملات الفلترة (`?type=`, `?region=` أو ما يعادلها)، ولا القيم
+التي يتوقّعها نموذج الفلاتر لكل نوع أرض أو ولاية. لذلك **لا توجد قيم افتراضية مبنية على تخمين** لهذا الموقع
+تحديدًا — القالب البرمجي (الفحص الدوري، كشف التكرار، التنبيه) جاهز وعام، لكن يحتاج ضبطًا يدويًا لمرة واحدة:
+
+1. افتح `https://omanreal.com/Properties` من متصفح، وطبّق فلترًا يدويًا (نوع أرض أو ولاية)، ولاحظ رابط الصفحة
+   الناتج — يكشف عادةً اسم معامل الاستعلام (`PROPERTY_TYPE_PARAM`, `PROPERTY_LOCATION_PARAM`) والقيمة التي
+   يرسلها الموقع لكل خيار (تُضبط في `PROPERTY_TYPE_AGRICULTURAL` وأخواتها).
+2. من Developer Tools (F12) → Elements، انقر بيمين الفأرة على بطاقة إعلان واحدة في النتائج → **Copy → Copy
+   XPath**، وضع الناتج في `PROPERTY_XPATH_ITEM`. كرّر الأمر لعنوان الإعلان ورابطه وموقعه وسعره داخل نفس
+   البطاقة (XPath نسبي يبدأ بـ `.`)، وضعها في `PROPERTY_XPATH_TITLE` وأخواتها.
+3. إن لم تتغيّر معاملات URL عند الفلترة (فلترة عبر JavaScript/AJAX دون تحديث الرابط)، افتح تبويب Network أثناء
+   الفلترة وابحث عن طلب XHR/fetch يحمل الفلتر في جسمه بدل الرابط — الكاشف الحالي (`OmanRealScraper`) يفترض
+   فلترة عبر query string؛ فلترة عبر AJAX تحتاج تعديلًا إضافيًا في تلك الفئة (طلب `POST`/JSON بدل `GET`).
+
+بدون هذا الضبط، الفحص **يفشل بخطأ صريح** (`ScraperConfigurationException`) بدل أن يُرجع "لا توجد إعلانات
+جديدة" بصمت — فشل واضح أفضل من نتيجة فارغة قد تُقرأ خطأً على أنها فحص سليم.
+
+### إعداد WhatsApp Cloud API
+
+1. أنشئ تطبيق Meta for Developers مع منتج **WhatsApp**: <https://developers.facebook.com/docs/whatsapp/cloud-api/get-started>
+2. احصل على `Phone Number ID` وتوكن وصول (مؤقت للتجربة، أو دائم لحساب Business).
+3. اضبط في `.env`:
+   ```dotenv
+   WHATSAPP_ENABLED=true
+   WHATSAPP_ACCESS_TOKEN=EAAG...
+   WHATSAPP_PHONE_NUMBER_ID=1234567890
+   ```
+4. **قيد من واتساب نفسه، لا من هذا الكود:** رسالة نصية حرّة تصل فقط ضمن نافذة 24 ساعة من آخر رسالة أرسلها
+   المستقبل لرقم العمل. تنبيهات دورية طويلة المدى تحتاج **قالب رسالة (message template)** معتمدًا من Meta —
+   راجع [توثيق القوالب](https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-message-templates)
+   وعدّل `WhatsAppCloudNotifier::send()` لاستخدام `type: "template"` بدل `type: "text"` عند الحاجة.
+
+### الفحص الدوري عبر cron
+
+```bash
+*/20 * * * * /usr/bin/php /path/to/project/bin/check_property_alerts.php >> /path/to/project/storage/property_alerts.log 2>&1
+```
+
+### الإعدادات
+
+```dotenv
+PROPERTY_ALERTS_STORAGE_PATH=      # مسار ملف JSON؛ افتراضيًا storage/property_alerts.json
+PROPERTY_ALERTS_MAX_ENTRIES=50     # الحد الأقصى لعدد الاشتراكات
+PROPERTY_ALERTS_MAX_NOTIFY=5       # أقصى رسائل واتساب لكل اشتراك في دورة فحص واحدة
+```
+
+---
+
 ## البنية
 
 ```
@@ -172,10 +238,17 @@ src/
   Watchlist/
     Contracts/       عقد إرسال التنبيهات (Notifier)
     WatchedUsername.php / WatchlistRepository.php / WatchlistChecker.php / WebhookNotifier.php
+  PropertyAlerts/
+    Contracts/       عقود الكاشف (Scraper) والتنبيه (Notifier)
+    DTO/Listing.php  إعلان عقاري كما استُخرج من صفحة الموقع
+    Scraper/OmanRealScraper.php  جلب النتائج واستخراجها عبر XPath قابل للضبط
+    PropertyType.php / PropertySubscription.php / PropertySubscriptionRepository.php
+    PropertyAlertChecker.php / WhatsAppCloudNotifier.php
   View/            محرّك قوالب بسيط
 views/             القوالب (layout، pages، partials)
 config/config.php  الإعدادات
-bin/check_watchlist.php  سكربت cron لفحص قائمة المراقبة
+bin/check_watchlist.php         سكربت cron لفحص قائمة المراقبة
+bin/check_property_alerts.php   سكربت cron لفحص التنبيهات العقارية
 tests/run.php      الاختبارات (بدون شبكة)
 deploy/            نموذج إعداد nginx
 ```

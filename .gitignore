@@ -3,6 +3,7 @@
 /storage/cache/*
 !/storage/cache/.gitkeep
 /storage/watchlist.json
+/storage/property_alerts.json
 /storage/*.log
 .DS_Store
 *.log

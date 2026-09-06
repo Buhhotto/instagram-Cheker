@@ -28,6 +28,16 @@ use App\Instagram\UsernameChecker;
 use App\Support\SeededRandom;
 use App\Support\Stats;
 use App\Support\Text;
+use App\PropertyAlerts\Contracts\Notifier as PropertyNotifier;
+use App\PropertyAlerts\Contracts\Scraper;
+use App\PropertyAlerts\DTO\Listing;
+use App\PropertyAlerts\Exception\ScraperConfigurationException;
+use App\PropertyAlerts\PropertyAlertChecker;
+use App\PropertyAlerts\PropertySubscription;
+use App\PropertyAlerts\PropertySubscriptionRepository;
+use App\PropertyAlerts\PropertyType;
+use App\PropertyAlerts\Scraper\OmanRealScraper;
+use App\PropertyAlerts\WhatsAppCloudNotifier;
 use App\Watchlist\Contracts\Notifier;
 use App\Watchlist\WatchedUsername;
 use App\Watchlist\WatchlistChecker;
@@ -395,6 +405,122 @@ $bulkResults = $bulkWatcher->checkAll();
 $t->assertSame(2, count($bulkResults), 'نتيجة لكل اسم في القائمة');
 $t->assert(isset($bulkResults['nasa']['status']), 'كل نتيجة تحمل حالة');
 @unlink($bulkFile);
+
+// ===== تنبيهات عقارية =====
+$t->group('PropertyType — الأنواع والتسميات');
+$t->assert(PropertyType::isValid('agricultural'), 'agricultural نوع صالح');
+$t->assert(!PropertyType::isValid('bogus'), 'نوع غير معروف مرفوض');
+$t->assertSame('زراعي', PropertyType::label('agricultural'), 'تسمية عربية للنوع الزراعي');
+
+$t->group('Listing::makeId — كشف التكرار');
+$t->assertSame(
+    Listing::makeId('https://x.test/a', 'عنوان مختلف', null, null),
+    Listing::makeId('https://x.test/a', 'عنوان آخر تمامًا', 'مسقط', '10000'),
+    'نفس الرابط ⇒ نفس المعرّف بغض النظر عن باقي الحقول'
+);
+$t->assert(
+    Listing::makeId(null, 'عنوان', 'مسقط', '1000') !== Listing::makeId(null, 'عنوان', 'صلالة', '1000'),
+    'بلا رابط: تغيّر الموقع يُغيّر بصمة المعرّف'
+);
+
+$t->group('PropertySubscriptionRepository — التخزين والقفل الملفي');
+$subFile = sys_get_temp_dir() . '/property_alerts_test_' . bin2hex(random_bytes(4)) . '.json';
+$subRepo = new PropertySubscriptionRepository($subFile);
+$t->assertSame([], $subRepo->all(), 'قائمة فارغة عند الإنشاء');
+$sub = $subRepo->add(new PropertySubscription('sub1', '96879000000', 'agricultural', 'مسقط', date(DATE_ATOM)));
+$t->assertSame(1, $subRepo->count(), 'إضافة اشتراك واحد');
+$t->assertSame('sub1', $subRepo->find('sub1')?->id, 'العثور على اشتراك موجود');
+$subRepo->update('sub1', function (PropertySubscription $e): PropertySubscription {
+    $e->seenListingIds = ['a', 'b'];
+
+    return $e;
+});
+$t->assertSame(['a', 'b'], $subRepo->find('sub1')?->seenListingIds, 'تحديث قائمة الإعلانات المرصودة');
+$reopenedSubs = new PropertySubscriptionRepository($subFile);
+$t->assertSame(['a', 'b'], $reopenedSubs->find('sub1')?->seenListingIds, 'استمرار البيانات عبر فتح جديد لنفس الملف');
+$t->assert($subRepo->remove('sub1'), 'إزالة اشتراك موجود تُرجع true');
+$t->assertSame(0, $subRepo->count(), 'القائمة فارغة بعد الحذف');
+@unlink($subFile);
+
+$t->group('WhatsAppCloudNotifier — التحقق من صيغة الرقم');
+$waNotifier = new WhatsAppCloudNotifier(new App\Http\HttpClient(2, 0), false, '', '');
+$t->assert($waNotifier->isValidRecipient('96879123456'), 'قبول رقم دولي صالح بدون رموز');
+$t->assert(!$waNotifier->isValidRecipient('+96879123456'), 'رفض رقم يحتوي على +');
+$t->assert(!$waNotifier->isValidRecipient('0079123456'), 'رفض رقم يبدأ بصفر');
+$t->assert(!$waNotifier->isValidRecipient('123'), 'رفض رقم قصير جدًا');
+$t->assert(!$waNotifier->send('96879123456', 'رسالة'), 'send تُرجع false عندما تكون الخدمة غير مفعّلة (enabled=false)');
+
+$t->group('OmanRealScraper — رفض العمل بلا مُحدِّدات مضبوطة');
+$unconfiguredScraper = new OmanRealScraper(
+    new App\Http\HttpClient(2, 0),
+    ['base_url' => 'https://omanreal.com/Properties', 'location_param' => '', 'type_param' => ''],
+    ['listing_item' => '', 'title' => '.', 'url' => './/a/@href', 'location' => '.', 'price' => '.'],
+    []
+);
+$t->assertThrows(
+    ScraperConfigurationException::class,
+    fn () => $unconfiguredScraper->search(null, null),
+    'يرمي استثناء واضح بدل إرجاع نتيجة فارغة عند عدم ضبط listing_item'
+);
+
+$t->group('PropertyAlertChecker — الفحص الأول يسجّل خط أساس بلا تنبيه');
+
+/** كاشف وهمي يُرجع قائمة إعلانات ثابتة قابلة للتبديل، بدل طلب شبكة حقيقي. */
+$scraperState = new class { /** @var list<Listing> */ public array $listings = []; };
+$fakeScraper = new class ($scraperState) implements Scraper {
+    public function __construct(private object $state)
+    {
+    }
+    public function search(?string $propertyType, ?string $location): array
+    {
+        return $this->state->listings;
+    }
+};
+
+$waRecorder = new class implements PropertyNotifier {
+    /** @var list<array{to:string,message:string}> */
+    public array $calls = [];
+    public function send(string $toPhone, string $message): bool
+    {
+        $this->calls[] = ['to' => $toPhone, 'message' => $message];
+
+        return true;
+    }
+};
+
+$paFile = sys_get_temp_dir() . '/property_alerts_flow_' . bin2hex(random_bytes(4)) . '.json';
+$paRepo = new PropertySubscriptionRepository($paFile);
+$paRepo->add(new PropertySubscription('sub1', '96879000000', 'agricultural', 'مسقط', date(DATE_ATOM)));
+$paChecker = new PropertyAlertChecker($paRepo, $fakeScraper, $waRecorder, 5);
+
+$scraperState->listings = [
+    new Listing(Listing::makeId('https://x.test/1', 'أرض 1', 'مسقط', '10000'), 'أرض 1', 'https://x.test/1', 'مسقط', '10000'),
+    new Listing(Listing::makeId('https://x.test/2', 'أرض 2', 'مسقط', '12000'), 'أرض 2', 'https://x.test/2', 'مسقط', '12000'),
+];
+$firstRun = $paChecker->checkOne('sub1');
+$t->assertSame(2, $firstRun['new_listings'], 'الفحص الأول يعتبر كل النتائج جديدة من ناحية العدّ');
+$t->assertSame(0, $firstRun['notified'], 'لكن لا يُرسل أي تنبيه عند الفحص الأول (خط أساس فقط)');
+$t->assertSame(0, count($waRecorder->calls), 'لا نداءات إرسال فعلية عند الفحص الأول');
+$t->assertSame(2, count($paRepo->find('sub1')?->seenListingIds ?? []), 'حفظ الإعلانات كخط أساس');
+
+$scraperState->listings[] = new Listing(
+    Listing::makeId('https://x.test/3', 'أرض 3', 'مسقط', '9000'),
+    'أرض 3',
+    'https://x.test/3',
+    'مسقط',
+    '9000'
+);
+$secondRun = $paChecker->checkOne('sub1');
+$t->assertSame(1, $secondRun['new_listings'], 'الفحص الثاني يكتشف إعلانًا جديدًا واحدًا فقط');
+$t->assertSame(1, $secondRun['notified'], 'يُرسل تنبيه واحد للإعلان الجديد');
+$t->assertSame(1, count($waRecorder->calls), 'نداء إرسال واحد فعليًا');
+$t->assertSame('96879000000', $waRecorder->calls[0]['to'], 'الإرسال إلى رقم الاشتراك');
+$t->assert(str_contains($waRecorder->calls[0]['message'], 'أرض 3'), 'نص الرسالة يذكر عنوان الإعلان الجديد');
+
+$thirdRun = $paChecker->checkOne('sub1');
+$t->assertSame(0, $thirdRun['new_listings'], 'لا إعلانات جديدة عند عدم تغيّر النتائج');
+$t->assertSame(1, count($waRecorder->calls), 'لا تنبيه إضافي بلا إعلانات جديدة فعليًا');
+@unlink($paFile);
 
 array_map('unlink', glob($cacheDir . '/*') ?: []);
 @rmdir($cacheDir);
