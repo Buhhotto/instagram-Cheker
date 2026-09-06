@@ -15,6 +15,7 @@ $nav = [
     '/analyze' => 'تحليل حساب',
     '/behavior' => 'قياس السلوك',
     '/watchlist' => 'قائمة المراقبة',
+    '/property-alerts' => 'تنبيهات عقارية',
 ];
 ?>
 <!doctype html>

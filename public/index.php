@@ -11,6 +11,7 @@ declare(strict_types=1);
 use App\Container;
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\PageController;
+use App\Http\Controllers\PropertyAlertsController;
 use App\Http\Controllers\WatchlistController;
 use App\Http\Request;
 use App\Http\Response;
@@ -33,6 +34,7 @@ $view = new View($root . '/views', [
 $pages = new PageController($container, $view);
 $api = new ApiController($container, $view);
 $watchlist = new WatchlistController($container, $view);
+$propertyAlerts = new PropertyAlertsController($container, $view);
 
 $request = Request::fromGlobals();
 
@@ -46,6 +48,11 @@ $router = (new Router())
     ->post('/watchlist/remove', [$watchlist, 'remove'])
     ->post('/watchlist/check', [$watchlist, 'checkOneWeb'])
     ->post('/watchlist/check-all', [$watchlist, 'checkAllWeb'])
+    ->get('/property-alerts', [$propertyAlerts, 'page'])
+    ->post('/property-alerts/add', [$propertyAlerts, 'add'])
+    ->post('/property-alerts/remove', [$propertyAlerts, 'remove'])
+    ->post('/property-alerts/check', [$propertyAlerts, 'checkOneWeb'])
+    ->post('/property-alerts/check-all', [$propertyAlerts, 'checkAllWeb'])
     ->get('/api/health', [$api, 'health'])
     ->any('/api/username/check', [$api, 'checkUsername'])
     ->any('/api/account/analyze', [$api, 'analyzeAccount'])
@@ -54,6 +61,10 @@ $router = (new Router())
     ->post('/api/watchlist/add', [$watchlist, 'apiAdd'])
     ->post('/api/watchlist/remove', [$watchlist, 'apiRemove'])
     ->post('/api/watchlist/check', [$watchlist, 'apiCheck'])
+    ->get('/api/property-alerts', [$propertyAlerts, 'apiList'])
+    ->post('/api/property-alerts/add', [$propertyAlerts, 'apiAdd'])
+    ->post('/api/property-alerts/remove', [$propertyAlerts, 'apiRemove'])
+    ->post('/api/property-alerts/check', [$propertyAlerts, 'apiCheck'])
     ->fallback(fn (Request $request): Response => $request->wantsJson()
         ? $api->notFound($request)
         : $pages->notFound($request));
