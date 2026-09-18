@@ -7,15 +7,16 @@ namespace App\Http\Controllers;
 use App\Http\Request;
 use App\Http\Response;
 use App\Instagram\Exception\RateLimitException;
+use App\PropertyAlerts\PropertySource;
 use App\PropertyAlerts\PropertySubscription;
 use App\PropertyAlerts\PropertyType;
 use Throwable;
 
 /**
- * تنبيهات واتساب عند ظهور إعلان أرض جديد على omanreal.com يطابق نوعًا
- * ومنطقة مختارة. راجع README لقيد مهم: مُحدِّدات استخراج الإعلانات من
- * الموقع يجب ضبطها يدويًا قبل أن يعمل الفحص فعليًا — هذا المستودع طُوّر
- * بلا وصول شبكي لذلك الموقع.
+ * تنبيهات واتساب عند ظهور إعلان أرض جديد على أحد المصادر المدعومة
+ * (عُمان ريل، السوق المفتوح) يطابق نوعًا ومنطقة مختارة. راجع README لقيد
+ * مهم: مُحدِّدات استخراج الإعلانات من كل موقع يجب ضبطها يدويًا قبل أن يعمل
+ * الفحص فعليًا — هذا المستودع طُوّر بلا وصول شبكي لأي منهما.
  */
 final class PropertyAlertsController extends Controller
 {
@@ -24,6 +25,7 @@ final class PropertyAlertsController extends Controller
         'added' => ['ok', 'أُضيف الاشتراك، وسيُسجَّل خط الأساس من الإعلانات الحالية عند أول فحص.'],
         'invalid_number' => ['error', 'رقم واتساب غير صالح — أدخله بصيغة دولية بدون + أو مسافات (مثال: 96879xxxxxx).'],
         'invalid_type' => ['error', 'نوع الأرض غير معروف.'],
+        'invalid_source' => ['error', 'مصدر الإعلانات غير معروف.'],
         'limit_reached' => ['error', 'وصلت قائمة الاشتراكات إلى الحد الأقصى.'],
         'removed' => ['ok', 'أُزيل الاشتراك.'],
         'checked' => ['ok', 'تم الفحص الآن.'],
@@ -32,12 +34,27 @@ final class PropertyAlertsController extends Controller
 
     public function page(Request $request): Response
     {
+        $propertySources = [];
+        $selectorsConfigured = [];
+        foreach (PropertySource::ALL as $key) {
+            $propertySources[$key] = $this->container->config()->string("property_alerts.sources.{$key}.label", $key);
+            $selectorsConfigured[$key] = trim(
+                $this->container->config()->string("property_alerts.sources.{$key}.selectors.listing_item")
+            ) !== '';
+        }
+
+        // ملاحظة: pageContext() يُرجع مفتاح 'sources' خاصًا بأسماء مزوّدي بيانات
+        // إنستاجرام النشطين (يُستخدم في تذييل كل صفحة) — لذلك مفاتيح المصادر
+        // العقارية هنا 'propertySources' عمدًا، لا 'sources'، لتفادي أن يُسكِت
+        // عامل + الاتحاد بين المصفوفتين قيمتنا بصمت (يفوز الطرف الأيسر عند تكرار المفتاح).
         $data = $this->pageContext('property-alerts') + [
             'entries' => $this->container->propertySubscriptionRepository()->all(),
             'maxEntries' => $this->container->config()->int('property_alerts.max_entries', 50),
             'types' => PropertyType::labels(),
+            'propertySources' => $propertySources,
+            'defaultSource' => PropertySource::DEFAULT,
             'whatsappEnabled' => $this->container->config()->bool('property_alerts.whatsapp.enabled', false),
-            'selectorsConfigured' => trim($this->container->config()->string('property_alerts.selectors.listing_item')) !== '',
+            'selectorsConfigured' => $selectorsConfigured,
             'flash' => self::FLASH_MESSAGES[(string) $request->input('flash', '')] ?? null,
         ];
 
@@ -155,6 +172,14 @@ final class PropertyAlertsController extends Controller
             return ['ok' => false, 'code' => 'invalid_type'];
         }
 
+        $source = trim((string) $request->input('source', PropertySource::DEFAULT));
+        if ($source === '') {
+            $source = PropertySource::DEFAULT;
+        }
+        if (!PropertySource::isValid($source)) {
+            return ['ok' => false, 'code' => 'invalid_source'];
+        }
+
         $location = trim((string) $request->input('location', ''));
 
         $repo = $this->container->propertySubscriptionRepository();
@@ -169,6 +194,7 @@ final class PropertyAlertsController extends Controller
             propertyType: $type !== '' ? $type : null,
             location: $location !== '' ? $location : null,
             createdAt: date(DATE_ATOM),
+            source: $source,
         ));
 
         // فحص أولي فوري لتسجيل خط الأساس مباشرة دون انتظار دورة الـ cron التالية.

@@ -5,30 +5,42 @@
  * @var list<App\PropertyAlerts\PropertySubscription> $entries
  * @var int $maxEntries
  * @var array<string,string> $types
+ * @var array<string,string> $propertySources
  * @var bool $whatsappEnabled
- * @var bool $selectorsConfigured
+ * @var array<string,bool> $selectorsConfigured
+ * @var string $defaultSource
  * @var array{0:string,1:string}|null $flash
  */
 $alertClass = ['ok' => 'alert-info', 'warn' => 'alert-warn', 'error' => 'alert-error'];
+$anySourceConfigured = in_array(true, $selectorsConfigured, true);
 ?>
 <h1 class="page-title">تنبيهات عقارية عبر واتساب</h1>
-<p class="page-sub">تنبيه واتساب فور ظهور إعلان أرض جديد على omanreal.com يطابق نوعًا وموقعًا تختارهما.</p>
+<p class="page-sub">تنبيه واتساب فور ظهور إعلان أرض جديد على عُمان ريل أو السوق المفتوح يطابق نوعًا وموقعًا تختارهما.</p>
 
 <div class="alert alert-info">
-    <strong>ما تفعله هذه الصفحة:</strong> تفحص صفحة نتائج الموقع دوريًا بفلترك (نوع الأرض + نص الموقع/الولاية)،
-    وعند ظهور إعلان لم يُرصد من قبل تُرسل رسالة واتساب برابطه. الفحص الأول لأي اشتراك يسجّل الإعلانات الحالية
-    كخط أساس بدون تنبيه، حتى لا تصلك رسالة عن كل إعلان موجود مسبقًا.<br>
-    <strong>ما لا تفعله:</strong> لا تتصفّح نيابة عنك ولا تحجز أرضًا ولا تنشئ حسابًا على الموقع — مجرّد رصد ومقارنة
+    <strong>ما تفعله هذه الصفحة:</strong> تفحص صفحة نتائج المصدر الذي تختاره دوريًا بفلترك (نوع الأرض + نص
+    الموقع/الولاية)، وعند ظهور إعلان لم يُرصد من قبل تُرسل رسالة واتساب برابطه. الفحص الأول لأي اشتراك يسجّل
+    الإعلانات الحالية كخط أساس بدون تنبيه، حتى لا تصلك رسالة عن كل إعلان موجود مسبقًا.<br>
+    <strong>ما لا تفعله:</strong> لا تتصفّح نيابة عنك ولا تحجز أرضًا ولا تنشئ حسابًا على أي موقع — مجرّد رصد ومقارنة
     وتنبيه على بيانات عامة معروضة أصلًا لأي زائر.
 </div>
 
-<?php if (!$selectorsConfigured): ?>
+<?php if (!$anySourceConfigured): ?>
     <div class="alert alert-warn">
-        <strong>الفحص غير جاهز بعد:</strong> مُحدِّدات استخراج الإعلانات من صفحة الموقع (<code>property_alerts.selectors</code>
-        في <code>.env</code>) غير مضبوطة. افتح الصفحة من متصفح، وحدّد بطاقة إعلان واحدة عبر Developer Tools →
-        Copy → Copy XPath، واملأ القيم — راجع التعليقات في <code>config/config.php</code> و README.
-        الاشتراكات تُحفظ الآن، لكن الفحص سيفشل برسالة خطأ واضحة حتى تُضبط.
+        <strong>الفحص غير جاهز بعد لأي مصدر:</strong> مُحدِّدات استخراج الإعلانات (<code>property_alerts.sources.*.selectors</code>
+        في <code>.env</code>) غير مضبوطة لعُمان ريل ولا للسوق المفتوح. افتح الموقع المطلوب من متصفح، وحدّد بطاقة
+        إعلان واحدة عبر Developer Tools → Copy → Copy XPath، واملأ القيم — راجع التعليقات في
+        <code>config/config.php</code> و README. الاشتراكات تُحفظ الآن، لكن الفحص سيفشل برسالة خطأ واضحة حتى تُضبط.
     </div>
+<?php else: ?>
+    <?php foreach ($propertySources as $key => $label): ?>
+        <?php if (!$selectorsConfigured[$key]): ?>
+            <div class="alert alert-warn">
+                <strong>مصدر «<?= e($label) ?>» غير جاهز:</strong> مُحدِّدات الاستخراج الخاصة به غير مضبوطة بعد —
+                الاشتراكات المرتبطة به ستفشل عند الفحص برسالة خطأ واضحة حتى تُضبط.
+            </div>
+        <?php endif; ?>
+    <?php endforeach; ?>
 <?php endif; ?>
 
 <?php if (!$whatsappEnabled): ?>
@@ -51,6 +63,14 @@ $alertClass = ['ok' => 'alert-info', 'warn' => 'alert-warn', 'error' => 'alert-e
                 <label for="whatsapp_number">رقم واتساب (صيغة دولية، أرقام فقط)</label>
                 <input type="text" id="whatsapp_number" name="whatsapp_number" dir="ltr"
                        placeholder="96879xxxxxx" maxlength="20" autocomplete="off" required>
+            </div>
+            <div class="field">
+                <label for="source">المصدر</label>
+                <select id="source" name="source">
+                    <?php foreach ($propertySources as $value => $label): ?>
+                        <option value="<?= e($value) ?>"><?= e($label) ?></option>
+                    <?php endforeach; ?>
+                </select>
             </div>
             <div class="field">
                 <label for="property_type">نوع الأرض</label>
@@ -88,6 +108,7 @@ $alertClass = ['ok' => 'alert-info', 'warn' => 'alert-warn', 'error' => 'alert-e
                 <thead>
                 <tr>
                     <th>واتساب</th>
+                    <th>المصدر</th>
                     <th>النوع</th>
                     <th>الموقع</th>
                     <th>إعلانات مرصودة</th>
@@ -100,6 +121,7 @@ $alertClass = ['ok' => 'alert-info', 'warn' => 'alert-warn', 'error' => 'alert-e
                 <?php foreach ($entries as $entry): ?>
                     <tr>
                         <td class="mono">+<?= e($entry->whatsappNumber) ?></td>
+                        <td><?= e($propertySources[$entry->source] ?? $entry->source) ?></td>
                         <td><?= e($entry->propertyType !== null ? ($types[$entry->propertyType] ?? $entry->propertyType) : 'أي نوع') ?></td>
                         <td><?= e($entry->location ?? 'أي موقع') ?></td>
                         <td class="mono"><?= e((string) count($entry->seenListingIds)) ?></td>
@@ -145,7 +167,8 @@ $alertClass = ['ok' => 'alert-info', 'warn' => 'alert-warn', 'error' => 'alert-e
 <div class="section">
     <p class="muted small">
         للاستعلام البرمجي: <code>GET /api/property-alerts</code> ·
-        <code>POST /api/property-alerts/add {whatsapp_number, property_type?, location?}</code> ·
+        <code>POST /api/property-alerts/add {whatsapp_number, source?, property_type?, location?}</code>
+        (source: <?= e(implode(' أو ', array_keys($propertySources))) ?>، افتراضيًا <?= e($defaultSource) ?>) ·
         <code>POST /api/property-alerts/check {id?}</code> (بلا id لفحص الكل) ·
         <code>POST /api/property-alerts/remove {id}</code>
     </p>

@@ -6,7 +6,7 @@ namespace App\PropertyAlerts;
 
 /**
  * أنواع الأرض المدعومة للفلترة. القيمة الداخلية ثابتة؛ قيمة معامل الاستعلام
- * الفعلية التي يفهمها الموقع تُقرأ من config('property_alerts.types').
+ * الفعلية التي يفهمها كل موقع تُقرأ من config('property_alerts.sources.<مصدر>.types').
  */
 final class PropertyType
 {

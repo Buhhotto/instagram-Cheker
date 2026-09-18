@@ -7,10 +7,10 @@ namespace App\PropertyAlerts\Scraper;
 use App\Http\HttpClient;
 
 /**
- * مصدر omanreal.com — راجع توثيق AbstractXPathScraper لآلية الاستخراج العامة
- * وسبب عدم وجود قيم افتراضية مُخمَّنة.
+ * مصدر السوق المفتوح (OpenSooq) — راجع توثيق AbstractXPathScraper لآلية
+ * الاستخراج العامة وسبب عدم وجود قيم افتراضية مُخمَّنة.
  */
-final class OmanRealScraper extends AbstractXPathScraper
+final class OpenSooqScraper extends AbstractXPathScraper
 {
     /**
      * @param array{base_url:string,location_param:string,type_param:string} $source
@@ -19,6 +19,6 @@ final class OmanRealScraper extends AbstractXPathScraper
      */
     public function __construct(HttpClient $http, array $source, array $selectors, array $typeMap)
     {
-        parent::__construct($http, 'omanreal.com', $source, $selectors, $typeMap);
+        parent::__construct($http, 'OpenSooq', $source, $selectors, $typeMap);
     }
 }

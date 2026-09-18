@@ -21,9 +21,10 @@ final class PropertyAlertChecker
     /** أقصى عدد إعلانات محفوظة في seenListingIds لكل اشتراك، لمنع نمو الملف بلا حدود. */
     private const MAX_SEEN_IDS = 500;
 
+    /** @param array<string,Scraper> $scrapers كاشف لكل مصدر مدعوم، مفتاحه قيمة PropertySource */
     public function __construct(
         private PropertySubscriptionRepository $repository,
-        private Scraper $scraper,
+        private array $scrapers,
         private Notifier $notifier,
         private int $maxNotificationsPerRun = 5,
     ) {
@@ -44,8 +45,22 @@ final class PropertyAlertChecker
         $isFirstCheck = $entry->seenListingIds === [];
         $now = date(DATE_ATOM);
 
+        $scraper = $this->scrapers[$entry->source] ?? null;
+        if ($scraper === null) {
+            $message = sprintf('مصدر غير مدعوم للاشتراك: "%s".', $entry->source);
+            $this->repository->update($entry->id, static function (PropertySubscription $sub) use ($now, $message): PropertySubscription {
+                $sub->lastCheckedAt = $now;
+                $sub->checkCount++;
+                $sub->lastError = $message;
+
+                return $sub;
+            });
+
+            return ['ok' => false, 'new_listings' => 0, 'notified' => 0, 'error' => $message];
+        }
+
         try {
-            $listings = $this->scraper->search($entry->propertyType, $entry->location);
+            $listings = $scraper->search($entry->propertyType, $entry->location);
         } catch (Throwable $e) {
             $message = $e->getMessage();
             $this->repository->update($entry->id, static function (PropertySubscription $sub) use ($now, $message): PropertySubscription {
