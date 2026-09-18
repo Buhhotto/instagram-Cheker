@@ -33,10 +33,12 @@ use App\PropertyAlerts\Contracts\Scraper;
 use App\PropertyAlerts\DTO\Listing;
 use App\PropertyAlerts\Exception\ScraperConfigurationException;
 use App\PropertyAlerts\PropertyAlertChecker;
+use App\PropertyAlerts\PropertySource;
 use App\PropertyAlerts\PropertySubscription;
 use App\PropertyAlerts\PropertySubscriptionRepository;
 use App\PropertyAlerts\PropertyType;
 use App\PropertyAlerts\Scraper\OmanRealScraper;
+use App\PropertyAlerts\Scraper\OpenSooqScraper;
 use App\PropertyAlerts\WhatsAppCloudNotifier;
 use App\Watchlist\Contracts\Notifier;
 use App\Watchlist\WatchedUsername;
@@ -412,6 +414,12 @@ $t->assert(PropertyType::isValid('agricultural'), 'agricultural نوع صالح'
 $t->assert(!PropertyType::isValid('bogus'), 'نوع غير معروف مرفوض');
 $t->assertSame('زراعي', PropertyType::label('agricultural'), 'تسمية عربية للنوع الزراعي');
 
+$t->group('PropertySource — المصادر المدعومة');
+$t->assert(PropertySource::isValid('omanreal'), 'omanreal مصدر صالح');
+$t->assert(PropertySource::isValid('opensooq'), 'opensooq مصدر صالح');
+$t->assert(!PropertySource::isValid('bogus'), 'مصدر غير معروف مرفوض');
+$t->assertSame('omanreal', PropertySource::DEFAULT, 'المصدر الافتراضي هو omanreal (للتوافق مع اشتراكات سابقة)');
+
 $t->group('Listing::makeId — كشف التكرار');
 $t->assertSame(
     Listing::makeId('https://x.test/a', 'عنوان مختلف', null, null),
@@ -442,6 +450,17 @@ $t->assert($subRepo->remove('sub1'), 'إزالة اشتراك موجود تُر�
 $t->assertSame(0, $subRepo->count(), 'القائمة فارغة بعد الحذف');
 @unlink($subFile);
 
+$t->group('PropertySubscription::fromArray — التوافق مع اشتراكات قبل تعدّد المصادر');
+$legacyEntry = PropertySubscription::fromArray(['id' => 'old1', 'whatsapp_number' => '96879000000']);
+$t->assertSame('omanreal', $legacyEntry->source, 'اشتراك محفوظ بلا حقل source يُفترض أنه omanreal');
+$opensooqEntry = PropertySubscription::fromArray(['id' => 'old3', 'whatsapp_number' => '96879000000', 'source' => 'opensooq']);
+$t->assertSame('opensooq', $opensooqEntry->source, 'قيمة source صالحة تُقرأ كما هي');
+// قيمة موجودة فعليًا في التخزين تبقى كما هي حتى لو لم تعد مصدرًا مدعومًا — نفس
+// معاملة propertyType وlocation، بدل استبدال صامت قد يوجّه الفحص لمصدر خطأ
+// (راجع اختبار PropertyAlertChecker أدناه لسلوك الخطأ الواضح عند الفحص الفعلي).
+$staleSourceEntry = PropertySubscription::fromArray(['id' => 'old2', 'whatsapp_number' => '96879000000', 'source' => 'discontinued_source']);
+$t->assertSame('discontinued_source', $staleSourceEntry->source, 'قيمة source غير مدعومة حاليًا تُقرأ كما هي، بلا استبدال صامت');
+
 $t->group('WhatsAppCloudNotifier — التحقق من صيغة الرقم');
 $waNotifier = new WhatsAppCloudNotifier(new App\Http\HttpClient(2, 0), false, '', '');
 $t->assert($waNotifier->isValidRecipient('96879123456'), 'قبول رقم دولي صالح بدون رموز');
@@ -461,6 +480,19 @@ $t->assertThrows(
     ScraperConfigurationException::class,
     fn () => $unconfiguredScraper->search(null, null),
     'يرمي استثناء واضح بدل إرجاع نتيجة فارغة عند عدم ضبط listing_item'
+);
+
+$t->group('OpenSooqScraper — نفس السلوك، مصدر مختلف');
+$unconfiguredOpenSooq = new OpenSooqScraper(
+    new App\Http\HttpClient(2, 0),
+    ['base_url' => 'https://om.opensooq.com/ar/عقارات-للبيع', 'location_param' => '', 'type_param' => ''],
+    ['listing_item' => '', 'title' => '.', 'url' => './/a/@href', 'location' => '.', 'price' => '.'],
+    []
+);
+$t->assertThrows(
+    ScraperConfigurationException::class,
+    fn () => $unconfiguredOpenSooq->search(null, null),
+    'يرمي استثناء واضح بدل إرجاع نتيجة فارغة عند عدم ضبط listing_item (OpenSooq أيضًا)'
 );
 
 $t->group('PropertyAlertChecker — الفحص الأول يسجّل خط أساس بلا تنبيه');
@@ -491,7 +523,7 @@ $waRecorder = new class implements PropertyNotifier {
 $paFile = sys_get_temp_dir() . '/property_alerts_flow_' . bin2hex(random_bytes(4)) . '.json';
 $paRepo = new PropertySubscriptionRepository($paFile);
 $paRepo->add(new PropertySubscription('sub1', '96879000000', 'agricultural', 'مسقط', date(DATE_ATOM)));
-$paChecker = new PropertyAlertChecker($paRepo, $fakeScraper, $waRecorder, 5);
+$paChecker = new PropertyAlertChecker($paRepo, [PropertySource::OMANREAL => $fakeScraper], $waRecorder, 5);
 
 $scraperState->listings = [
     new Listing(Listing::makeId('https://x.test/1', 'أرض 1', 'مسقط', '10000'), 'أرض 1', 'https://x.test/1', 'مسقط', '10000'),
@@ -521,6 +553,55 @@ $thirdRun = $paChecker->checkOne('sub1');
 $t->assertSame(0, $thirdRun['new_listings'], 'لا إعلانات جديدة عند عدم تغيّر النتائج');
 $t->assertSame(1, count($waRecorder->calls), 'لا تنبيه إضافي بلا إعلانات جديدة فعليًا');
 @unlink($paFile);
+
+$t->group('PropertyAlertChecker — يختار الكاشف الصحيح حسب مصدر كل اشتراك');
+
+/** كاشف وهمي ثانٍ منفصل، ليتحقق الاختبار من عدم خلط الاشتراكات بين المصدرين. */
+$openSooqState = new class { /** @var list<Listing> */ public array $listings = []; };
+$fakeOpenSooqScraper = new class ($openSooqState) implements Scraper {
+    public function __construct(private object $state)
+    {
+    }
+    public function search(?string $propertyType, ?string $location): array
+    {
+        return $this->state->listings;
+    }
+};
+$openSooqState->listings = [
+    new Listing(Listing::makeId('https://opensooq.test/1', 'أرض سوق مفتوح', 'صلالة', '5000'), 'أرض سوق مفتوح', 'https://opensooq.test/1', 'صلالة', '5000'),
+];
+
+$multiFile = sys_get_temp_dir() . '/property_alerts_multi_' . bin2hex(random_bytes(4)) . '.json';
+$multiRepo = new PropertySubscriptionRepository($multiFile);
+$multiRepo->add(new PropertySubscription('om1', '96879000001', null, null, date(DATE_ATOM), source: PropertySource::OMANREAL));
+$multiRepo->add(new PropertySubscription('os1', '96879000002', null, null, date(DATE_ATOM), source: PropertySource::OPENSOOQ));
+$multiRepo->add(new PropertySubscription('bad1', '96879000003', null, null, date(DATE_ATOM), source: 'unsupported_source'));
+
+$multiChecker = new PropertyAlertChecker(
+    $multiRepo,
+    [PropertySource::OMANREAL => $fakeScraper, PropertySource::OPENSOOQ => $fakeOpenSooqScraper],
+    $waRecorder,
+    5
+);
+
+$scraperState->listings = [
+    new Listing(Listing::makeId('https://x.test/1', 'أرض 1', 'مسقط', '10000'), 'أرض 1', 'https://x.test/1', 'مسقط', '10000'),
+];
+$multiChecker->checkOne('om1');
+$t->assertSame(1, count($multiRepo->find('om1')?->seenListingIds ?? []), 'اشتراك omanreal يستخدم كاشف omanreal (إعلان واحد من قائمته)');
+
+$multiChecker->checkOne('os1');
+$t->assertSame(1, count($multiRepo->find('os1')?->seenListingIds ?? []), 'اشتراك opensooq يستخدم كاشف opensooq وليس كاشف omanreal');
+$osEntry = $multiRepo->find('os1');
+$t->assert(
+    $osEntry !== null && in_array(Listing::makeId('https://opensooq.test/1', 'أرض سوق مفتوح', 'صلالة', '5000'), $osEntry->seenListingIds, true),
+    'المعرّف المحفوظ لاشتراك opensooq هو فعلًا من نتائج كاشف opensooq'
+);
+
+$badResult = $multiChecker->checkOne('bad1');
+$t->assertSame(false, $badResult['ok'], 'اشتراك بمصدر غير مدعوم في المسجّل يفشل بوضوح');
+$t->assert(str_contains((string) ($badResult['error'] ?? ''), 'unsupported_source'), 'رسالة الخطأ تذكر المصدر غير المدعوم');
+@unlink($multiFile);
 
 array_map('unlink', glob($cacheDir . '/*') ?: []);
 @rmdir($cacheDir);

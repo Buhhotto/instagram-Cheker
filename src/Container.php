@@ -17,9 +17,12 @@ use App\Instagram\Providers\GraphApiProvider;
 use App\Instagram\Providers\PublicWebProvider;
 use App\Instagram\ProviderChain;
 use App\Instagram\UsernameChecker;
+use App\PropertyAlerts\Contracts\Scraper;
 use App\PropertyAlerts\PropertyAlertChecker;
+use App\PropertyAlerts\PropertySource;
 use App\PropertyAlerts\PropertySubscriptionRepository;
 use App\PropertyAlerts\Scraper\OmanRealScraper;
+use App\PropertyAlerts\Scraper\OpenSooqScraper;
 use App\PropertyAlerts\WhatsAppCloudNotifier;
 use App\Support\Config;
 use App\Support\Env;
@@ -185,10 +188,29 @@ final class Container
     {
         return $this->instances['oman_real_scraper'] ??= new OmanRealScraper(
             $this->http(),
-            $this->config->array('property_alerts.source'),
-            $this->config->array('property_alerts.selectors'),
-            $this->config->array('property_alerts.types')
+            $this->config->array('property_alerts.sources.omanreal'),
+            $this->config->array('property_alerts.sources.omanreal.selectors'),
+            $this->config->array('property_alerts.sources.omanreal.types')
         );
+    }
+
+    public function openSooqScraper(): OpenSooqScraper
+    {
+        return $this->instances['opensooq_scraper'] ??= new OpenSooqScraper(
+            $this->http(),
+            $this->config->array('property_alerts.sources.opensooq'),
+            $this->config->array('property_alerts.sources.opensooq.selectors'),
+            $this->config->array('property_alerts.sources.opensooq.types')
+        );
+    }
+
+    /** @return array<string,Scraper> كاشف لكل مصدر مدعوم، مفتاحه قيمة PropertySource */
+    public function propertyScrapers(): array
+    {
+        return [
+            PropertySource::OMANREAL => $this->omanRealScraper(),
+            PropertySource::OPENSOOQ => $this->openSooqScraper(),
+        ];
     }
 
     public function whatsAppNotifier(): WhatsAppCloudNotifier
@@ -206,7 +228,7 @@ final class Container
     {
         return $this->instances['property_alert_checker'] ??= new PropertyAlertChecker(
             $this->propertySubscriptionRepository(),
-            $this->omanRealScraper(),
+            $this->propertyScrapers(),
             $this->whatsAppNotifier(),
             $this->config->int('property_alerts.max_notifications_per_run', 5)
         );

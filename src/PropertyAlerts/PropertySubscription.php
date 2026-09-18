@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace App\PropertyAlerts;
 
 /**
- * اشتراك تنبيه: رقم واتساب + فلتر (نوع أرض اختياري، ونص موقع اختياري
- * يُطابَق جزئيًا مع نص موقع كل إعلان — لأن قيم الولاية/المحافظة الفعلية
- * في نموذج الموقع غير معروفة لهذا المستودع، فالمطابقة نصّية بدل قائمة
- * مقفلة، وتبقى قابلة للتشديد لاحقًا إن اكتُشفت القيم الدقيقة).
+ * اشتراك تنبيه: رقم واتساب + مصدر (أي موقع عقاري مدعوم) + فلتر (نوع أرض
+ * اختياري، ونص موقع اختياري يُطابَق جزئيًا مع نص موقع كل إعلان — لأن قيم
+ * الولاية/المحافظة الفعلية في نموذج الموقع غير معروفة لهذا المستودع،
+ * فالمطابقة نصّية بدل قائمة مقفلة، وتبقى قابلة للتشديد لاحقًا إن اكتُشفت
+ * القيم الدقيقة).
  */
 final class PropertySubscription implements \JsonSerializable
 {
@@ -19,6 +20,7 @@ final class PropertySubscription implements \JsonSerializable
         public ?string $propertyType,
         public ?string $location,
         public readonly string $createdAt,
+        public string $source = PropertySource::DEFAULT,
         public array $seenListingIds = [],
         public ?string $lastCheckedAt = null,
         public int $checkCount = 0,
@@ -37,6 +39,12 @@ final class PropertySubscription implements \JsonSerializable
             propertyType: !empty($data['property_type']) ? (string) $data['property_type'] : null,
             location: !empty($data['location']) ? (string) $data['location'] : null,
             createdAt: (string) ($data['created_at'] ?? date(DATE_ATOM)),
+            // اشتراكات محفوظة قبل دعم تعدّد المصادر لا تحمل هذا الحقل؛ عمانريل كان
+            // المصدر الوحيد وقتها، فهو الافتراضي الصحيح لبياناتها القديمة. لا
+            // نستبدل قيمة موجودة فعليًا حتى لو لم تعد مدعومة حاليًا (مثل propertyType
+            // وlocation تمامًا) — PropertyAlertChecker يُبلّغ بخطأ واضح عندها بدل
+            // توجيه الفحص بصمت إلى مصدر آخر قد يعطي نتائج مضلِّلة.
+            source: !empty($data['source']) ? (string) $data['source'] : PropertySource::DEFAULT,
             seenListingIds: is_array($seen) ? array_values(array_map('strval', $seen)) : [],
             lastCheckedAt: isset($data['last_checked_at']) ? (string) $data['last_checked_at'] : null,
             checkCount: (int) ($data['check_count'] ?? 0),
@@ -50,6 +58,7 @@ final class PropertySubscription implements \JsonSerializable
         return [
             'id' => $this->id,
             'whatsapp_number' => $this->whatsappNumber,
+            'source' => $this->source,
             'property_type' => $this->propertyType,
             'property_type_label' => $this->propertyType !== null ? PropertyType::label($this->propertyType) : null,
             'location' => $this->location,
